@@ -3,7 +3,9 @@
 #include <ws2tcpip.h>
 #include <string>
 #include <vector>
+#include "../core/Config.hpp"
 #include "../core/Logger.hpp"
+#include "SocketIo.hpp"
 
 namespace Network {
     
@@ -21,22 +23,19 @@ namespace Network {
     class Socks5Client {
     private:
         // Helper to ensure exact number of bytes are read (handles TCP fragmentation)
-        static bool ReadExact(SOCKET sock, uint8_t* buf, int len) {
-            int totalRead = 0;
-            while (totalRead < len) {
-                int result = recv(sock, (char*)(buf + totalRead), len - totalRead, 0);
-                if (result <= 0) {
-                    return false;
-                }
-                totalRead += result;
-            }
-            return true;
+        static bool ReadExact(SOCKET sock, uint8_t* buf, int len, int timeoutMs) {
+            // 使用统一的 IO 封装，兼容非阻塞套接字
+            return SocketIo::RecvExact(sock, buf, len, timeoutMs);
         }
 
     public:
         // Execute SOCKS5 Handshake (No Auth)
         // Returns true if tunnel is established
         static bool Handshake(SOCKET sock, const std::string& targetHost, uint16_t targetPort) {
+            auto& config = Core::Config::Instance();
+            int recvTimeout = config.timeout.recv_ms;
+            int sendTimeout = config.timeout.send_ms;
+
             // 1. Auth Method Negotiation
             // +----+----------+----------+
             // |VER | NMETHODS | METHODS  |
@@ -44,15 +43,17 @@ namespace Network {
             // | 1  |    1     | 1 to 255 |
             // +----+----------+----------+
             uint8_t authRequest[3] = { Socks5::VERSION, 0x01, Socks5::AUTH_NONE };
-            if (send(sock, (char*)authRequest, 3, 0) != 3) {
-                Core::Logger::Error("SOCKS5: 发送认证请求失败");
+            if (!SocketIo::SendAll(sock, (const char*)authRequest, 3, sendTimeout)) {
+                int err = WSAGetLastError();
+                Core::Logger::Error("SOCKS5: 发送认证请求失败, WSA错误码=" + std::to_string(err));
                 return false;
             }
             
             // Receive Auth Method Response
             uint8_t authResponse[2];
-            if (!ReadExact(sock, authResponse, 2)) {
-                Core::Logger::Error("SOCKS5: 读取认证响应失败");
+            if (!ReadExact(sock, authResponse, 2, recvTimeout)) {
+                int err = WSAGetLastError();
+                Core::Logger::Error("SOCKS5: 读取认证响应失败, WSA错误码=" + std::to_string(err));
                 return false;
             }
             
@@ -91,8 +92,9 @@ namespace Network {
             request.push_back((targetPort >> 8) & 0xFF);
             request.push_back(targetPort & 0xFF);
             
-            if (send(sock, (char*)request.data(), (int)request.size(), 0) != (int)request.size()) {
-                Core::Logger::Error("SOCKS5: 发送连接请求失败");
+            if (!SocketIo::SendAll(sock, (const char*)request.data(), (int)request.size(), sendTimeout)) {
+                int err = WSAGetLastError();
+                Core::Logger::Error("SOCKS5: 发送连接请求失败, WSA错误码=" + std::to_string(err));
                 return false;
             }
             
@@ -101,8 +103,9 @@ namespace Network {
             
             // Read Header: VER, REP, RSV, ATYP
             uint8_t header[4];
-            if (!ReadExact(sock, header, 4)) {
-                Core::Logger::Error("SOCKS5: 读取响应头失败");
+            if (!ReadExact(sock, header, 4, recvTimeout)) {
+                int err = WSAGetLastError();
+                Core::Logger::Error("SOCKS5: 读取响应头失败, WSA错误码=" + std::to_string(err));
                 return false;
             }
             
@@ -128,8 +131,9 @@ namespace Network {
                     break;
                 case Socks5::ATYP_DOMAIN: {
                     uint8_t lenByte;
-                    if (!ReadExact(sock, &lenByte, 1)) {
-                        Core::Logger::Error("SOCKS5: 读取域名长度失败");
+                    if (!ReadExact(sock, &lenByte, 1, recvTimeout)) {
+                        int err = WSAGetLastError();
+                        Core::Logger::Error("SOCKS5: 读取域名长度失败, WSA错误码=" + std::to_string(err));
                         return false;
                     }
                     addrLen = lenByte;
@@ -143,16 +147,18 @@ namespace Network {
             // Consume Address Bytes (Ignore actual value as we don't need the bind addr)
             if (addrLen > 0) {
                 std::vector<uint8_t> trash(addrLen);
-                if (!ReadExact(sock, trash.data(), addrLen)) {
-                    Core::Logger::Error("SOCKS5: 读取绑定地址失败");
+                if (!ReadExact(sock, trash.data(), addrLen, recvTimeout)) {
+                    int err = WSAGetLastError();
+                    Core::Logger::Error("SOCKS5: 读取绑定地址失败, WSA错误码=" + std::to_string(err));
                     return false;
                 }
             }
             
             // Consume Port (2 bytes)
             uint8_t portBuf[2];
-            if (!ReadExact(sock, portBuf, 2)) {
-                Core::Logger::Error("SOCKS5: 读取绑定端口失败");
+            if (!ReadExact(sock, portBuf, 2, recvTimeout)) {
+                int err = WSAGetLastError();
+                Core::Logger::Error("SOCKS5: 读取绑定端口失败, WSA错误码=" + std::to_string(err));
                 return false;
             }
             

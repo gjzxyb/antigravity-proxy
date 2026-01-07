@@ -3,7 +3,9 @@
 #include <ws2tcpip.h>
 #include <string>
 #include <sstream>
+#include "../core/Config.hpp"
 #include "../core/Logger.hpp"
+#include "SocketIo.hpp"
 
 namespace Network {
     
@@ -33,10 +35,13 @@ namespace Network {
             request << "\r\n";
             
             std::string requestStr = request.str();
+            auto& config = Core::Config::Instance();
+            int recvTimeout = config.timeout.recv_ms;
+            int sendTimeout = config.timeout.send_ms;
             
             // 发送 CONNECT 请求
-            int sentBytes = send(sock, requestStr.c_str(), (int)requestStr.length(), 0);
-            if (sentBytes != (int)requestStr.length()) {
+            // 使用统一 IO 封装，兼容非阻塞套接字
+            if (!SocketIo::SendAll(sock, requestStr.c_str(), (int)requestStr.length(), sendTimeout)) {
                 int err = WSAGetLastError();
                 Core::Logger::Error("HTTP CONNECT: 发送请求失败, WSA错误码=" + std::to_string(err));
                 return false;
@@ -44,36 +49,15 @@ namespace Network {
             
             // 接收响应
             // HTTP 响应头格式: HTTP/1.x 200 ...\r\n...\r\n\r\n
-            char buffer[1024] = {0};
-            int totalReceived = 0;
-            bool headerComplete = false;
-            
-            // 循环接收直到收到完整的响应头 (\r\n\r\n)
-            while (totalReceived < (int)sizeof(buffer) - 1 && !headerComplete) {
-                int recvBytes = recv(sock, buffer + totalReceived, 1, 0); // 逐字节接收以便精确检测边界
-                if (recvBytes <= 0) {
-                    int err = WSAGetLastError();
-                    Core::Logger::Error("HTTP CONNECT: 接收响应失败, WSA错误码=" + std::to_string(err));
-                    return false;
+            std::string response;
+            if (!SocketIo::RecvUntil(sock, &response, "\r\n\r\n", recvTimeout, 1024)) {
+                int err = WSAGetLastError();
+                if (err == WSAEMSGSIZE) {
+                    Core::Logger::Error("HTTP CONNECT: 响应头过长或不完整");
                 }
-                totalReceived += recvBytes;
-                
-                // 检查是否收到了完整的响应头
-                if (totalReceived >= 4) {
-                    if (buffer[totalReceived - 4] == '\r' && buffer[totalReceived - 3] == '\n' &&
-                        buffer[totalReceived - 2] == '\r' && buffer[totalReceived - 1] == '\n') {
-                        headerComplete = true;
-                    }
-                }
-            }
-            
-            if (!headerComplete) {
-                Core::Logger::Error("HTTP CONNECT: 响应头过长或不完整");
+                Core::Logger::Error("HTTP CONNECT: 接收响应失败, WSA错误码=" + std::to_string(err));
                 return false;
             }
-            
-            buffer[totalReceived] = '\0';
-            std::string response(buffer);
             
             // 解析状态码
             // 期望格式: HTTP/1.x 200 ...
