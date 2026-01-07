@@ -1,25 +1,25 @@
 {
-  "traffic_logging": false,
-  "timeout": {
-    "connect": 5000,
-    "recv": 5000,
-    "send": 5000
-  },
   "_build": {
-    "date": "2026-01-07 21:31:20",
     "config": "Release",
-    "arch": "x64"
+    "arch": "x64",
+    "date": "2026-01-07 22:18:45"
   },
-  "_version": "1.0.0",
+  "timeout": {
+    "send": 5000,
+    "recv": 5000,
+    "connect": 5000
+  },
+  "traffic_logging": false,
+  "child_injection": true,
+  "_comment": "Antigravity-Proxy 配置文件",
   "proxy": {
-    "type": "socks5",
     "host": "127.0.0.1",
+    "type": "socks5",
     "port": 7890
   },
   "fake_ip": {
-    "cidr": "10.0.0.0/8",
-    "enabled": true
+    "enabled": true,
+    "cidr": "10.0.0.0/8"
   },
-  "_comment": "Antigravity-Proxy 配置文件",
-  "child_injection": true
+  "_version": "1.0.0"
 }

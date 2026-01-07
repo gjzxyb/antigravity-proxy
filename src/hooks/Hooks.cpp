@@ -78,6 +78,18 @@ int PerformProxyConnect(SOCKET s, const struct sockaddr* name, int namelen, bool
     g_currentTarget.host = originalHost;
     g_currentTarget.port = originalPort;
     
+    // BYPASS: 跳过本地回环地址，避免代理死循环
+    if (originalHost == "127.0.0.1" || originalHost == "localhost" || 
+        originalHost.substr(0, 4) == "127." || originalHost == "::1") {
+        return isWsa ? fpWSAConnect(s, name, namelen, NULL, NULL, NULL, NULL) : fpConnect(s, name, namelen);
+    }
+    
+    // BYPASS: 如果目标端口就是代理端口，直连（防止代理自连接）
+    if (originalPort == config.proxy.port && 
+        (originalHost == config.proxy.host || originalHost == "127.0.0.1")) {
+        return isWsa ? fpWSAConnect(s, name, namelen, NULL, NULL, NULL, NULL) : fpConnect(s, name, namelen);
+    }
+    
     // 如果配置了代理
     if (config.proxy.port != 0) {
         Core::Logger::Info("正重定向 " + originalHost + ":" + std::to_string(originalPort) + " 到代理");
@@ -211,39 +223,48 @@ BOOL WINAPI DetourCreateProcessW(
     );
     
     if (result && needInject && lpProcessInformation) {
-        Core::Logger::Info("拦截到进程创建，准备注入 DLL...");
-        
-        // 注入 DLL 到子进程
-        std::wstring dllPath = Injection::ProcessInjector::GetCurrentDllPath();
-        if (!dllPath.empty()) {
-            Injection::ProcessInjector::InjectDll(lpProcessInformation->hProcess, dllPath);
-            
-            // 记录详细注入信息
-            std::string appName = "Unknown";
-            LPCWSTR targetStr = lpApplicationName ? lpApplicationName : lpCommandLine;
-            if (targetStr) {
-                 int len = WideCharToMultiByte(CP_ACP, 0, targetStr, -1, NULL, 0, NULL, NULL);
-                 if (len > 0) {
-                     std::vector<char> buf(len);
-                     WideCharToMultiByte(CP_ACP, 0, targetStr, -1, buf.data(), len, NULL, NULL);
-                     appName = buf.data();
-                     // 简单处理：提取文件名
-                     size_t lastSlash = appName.find_last_of("\\/");
-                     if (lastSlash != std::string::npos) appName = appName.substr(lastSlash + 1);
-                     // 去掉可能的引号
-                     if (!appName.empty() && appName.front() == '\"') appName.erase(0, 1);
-                     if (!appName.empty() && appName.back() == '\"') appName.pop_back(); 
-                     // 再次过滤可能的参数（针对 lpCommandLine）
-                     size_t firstSpace = appName.find(' ');
-                     if (firstSpace != std::string::npos) appName = appName.substr(0, firstSpace);
-                 }
-            }
-            Core::Logger::Info("[成功] 已注入目标进程: " + appName + " (PID: " + std::to_string(lpProcessInformation->dwProcessId) + ") - 父子关系建立");
+        // 先提取进程名用于过滤检查
+        std::string appName = "Unknown";
+        LPCWSTR targetStr = lpApplicationName ? lpApplicationName : lpCommandLine;
+        if (targetStr) {
+             int len = WideCharToMultiByte(CP_ACP, 0, targetStr, -1, NULL, 0, NULL, NULL);
+             if (len > 0) {
+                 std::vector<char> buf(len);
+                 WideCharToMultiByte(CP_ACP, 0, targetStr, -1, buf.data(), len, NULL, NULL);
+                 appName = buf.data();
+                 // 简单处理：提取文件名
+                 size_t lastSlash = appName.find_last_of("\\/");
+                 if (lastSlash != std::string::npos) appName = appName.substr(lastSlash + 1);
+                 // 去掉可能的引号
+                 if (!appName.empty() && appName.front() == '\"') appName.erase(0, 1);
+                 if (!appName.empty() && appName.back() == '\"') appName.pop_back(); 
+                 // 再次过滤可能的参数（针对 lpCommandLine）
+                 size_t firstSpace = appName.find(' ');
+                 if (firstSpace != std::string::npos) appName = appName.substr(0, firstSpace);
+             }
         }
         
-        // 如果原始调用没有要求挂起，则恢复进程
-        if (!(dwCreationFlags & CREATE_SUSPENDED)) {
-            ResumeThread(lpProcessInformation->hThread);
+        // 检查是否在目标进程列表中
+        if (!config.ShouldInject(appName)) {
+            Core::Logger::Info("[跳过] 非目标进程: " + appName + " (PID: " + std::to_string(lpProcessInformation->dwProcessId) + ")");
+            // 恢复进程（不注入）
+            if (!(dwCreationFlags & CREATE_SUSPENDED)) {
+                ResumeThread(lpProcessInformation->hThread);
+            }
+        } else {
+            Core::Logger::Info("拦截到进程创建，准备注入 DLL...");
+            
+            // 注入 DLL 到子进程
+            std::wstring dllPath = Injection::ProcessInjector::GetCurrentDllPath();
+            if (!dllPath.empty()) {
+                Injection::ProcessInjector::InjectDll(lpProcessInformation->hProcess, dllPath);
+                Core::Logger::Info("[成功] 已注入目标进程: " + appName + " (PID: " + std::to_string(lpProcessInformation->dwProcessId) + ") - 父子关系建立");
+            }
+            
+            // 如果原始调用没有要求挂起，则恢复进程
+            if (!(dwCreationFlags & CREATE_SUSPENDED)) {
+                ResumeThread(lpProcessInformation->hThread);
+            }
         }
     }
     

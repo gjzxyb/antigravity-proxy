@@ -2,6 +2,9 @@
 #include <nlohmann/json.hpp>
 #include <fstream>
 #include <string>
+#include <vector>
+#include <algorithm>
+#include <cctype>
 #include "Logger.hpp"
 
 namespace Core {
@@ -29,6 +32,30 @@ namespace Core {
         TimeoutConfig timeout;
         bool trafficLogging = false;    // Phase 3: 是否启用流量监控日志
         bool childInjection = true;     // Phase 2: 是否自动注入子进程
+        std::vector<std::string> targetProcesses; // 目标进程列表 (空=全部)
+
+        // 检查进程名是否在目标列表中 (大小写不敏感)
+        bool ShouldInject(const std::string& processName) const {
+            // 如果列表为空，注入所有进程
+            if (targetProcesses.empty()) return true;
+            
+            // 将输入转为小写进行比较
+            std::string lowerName = processName;
+            std::transform(lowerName.begin(), lowerName.end(), lowerName.begin(), 
+                [](unsigned char c) { return std::tolower(c); });
+            
+            for (const auto& target : targetProcesses) {
+                std::string lowerTarget = target;
+                std::transform(lowerTarget.begin(), lowerTarget.end(), lowerTarget.begin(),
+                    [](unsigned char c) { return std::tolower(c); });
+                
+                // 支持完全匹配或不带扩展名匹配
+                if (lowerName == lowerTarget) return true;
+                // 支持类似 "language_server_windows" 匹配 "language_server_windows.exe"
+                if (lowerName.find(lowerTarget) != std::string::npos) return true;
+            }
+            return false;
+        }
 
         static Config& Instance() {
             static Config instance;
@@ -67,6 +94,17 @@ namespace Core {
                 // Phase 2/3 配置项
                 trafficLogging = j.value("traffic_logging", false);
                 childInjection = j.value("child_injection", true);
+
+                // 目标进程列表
+                if (j.contains("target_processes") && j["target_processes"].is_array()) {
+                    targetProcesses.clear();
+                    for (const auto& item : j["target_processes"]) {
+                        if (item.is_string()) {
+                            targetProcesses.push_back(item.get<std::string>());
+                        }
+                    }
+                    Logger::Info("已加载目标进程列表, 共 " + std::to_string(targetProcesses.size()) + " 项");
+                }
 
                 Logger::Info("Config loaded successfully.");
                 return true;
