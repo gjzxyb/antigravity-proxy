@@ -49,3 +49,7 @@ log/
 
 *.zip
 *.7z
+
+build/
+build-x64/
+build-x86/
